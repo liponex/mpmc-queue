@@ -323,6 +323,7 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
 
     const Job = struct {
         const Self = @This();
+
         a: [56]u8 = undefined,
 
         pub fn init(id: u8) Self {
@@ -339,10 +340,23 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
     defer queue.deinit(allocator);
 
     const JobThread = struct {
+        const Self = @This();
+        const Thread = std.Thread;
+        const SpawnConfig = Thread.SpawnConfig;
+        const SpawnError = Thread.SpawnError;
+
         index: usize,
         queue: *JobQueue,
 
-        pub fn main(self: @This()) void {
+        pub fn init(index: usize, _queue: *JobQueue) Self {
+            return Self{ .index = index, .queue = _queue };
+        }
+
+        pub fn spawn(config: SpawnConfig, index: usize, _queue: *JobQueue) !Thread {
+            return Thread.spawn(config, Self.main, .{Self.init(index, _queue)});
+        }
+
+        pub fn main(self: Self) void {
             std.debug.print("JobThread {} START\n", .{self.index});
 
             while (true) {
@@ -359,10 +373,10 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
     };
 
     const threads = [4]std.Thread{
-        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 0, .queue = &queue }}),
-        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 1, .queue = &queue }}),
-        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 2, .queue = &queue }}),
-        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 3, .queue = &queue }}),
+        try JobThread.spawn(.{}, 1, &queue),
+        try JobThread.spawn(.{}, 2, &queue),
+        try JobThread.spawn(.{}, 3, &queue),
+        try JobThread.spawn(.{}, 4, &queue),
     };
 
     queue.enqueue(Job.init(1));
