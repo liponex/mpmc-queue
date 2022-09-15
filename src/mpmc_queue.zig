@@ -26,11 +26,12 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
 
         const NoSlots: []Slot = &[0]Slot{};
 
-        _slots: []Slot = NoSlots,
-
-        // Aligned to avoid false sharing between _head and _tail
-        _head: usize align(cache_line_size) = 0,
-        _tail: usize align(cache_line_size) = 0,
+        // zig fmt: off
+        // Aligned to avoid false sharing
+        _head  :  usize align(cache_line_size) = 0,
+        _tail  :  usize align(cache_line_size) = 0,
+        _slots : []Slot align(cache_line_size) = NoSlots,
+        // zig fmt: on
 
         // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -207,8 +208,8 @@ test "MPMCQueue basics" {
     try expectEqual(true, @sizeOf(Slot) % cache_line_size == 0);
 
     std.debug.print("\n", .{});
-    std.debug.print("@sizeOf(Data):{}\n", .{ @sizeOf(Data) });
-    std.debug.print("@sizeOf(Slot):{}\n", .{ @sizeOf(Slot) });
+    std.debug.print("@sizeOf(Data):{}\n", .{@sizeOf(Data)});
+    std.debug.print("@sizeOf(Slot):{}\n", .{@sizeOf(Slot)});
 
     var allocator = std.testing.allocator;
 
@@ -270,14 +271,13 @@ test "MPMCQueueUnmanaged(usize) multiple consumers" {
     const Context = struct {
         queue: *JobQueue,
     };
-    var context = Context { .queue = &queue };
+    var context = Context{ .queue = &queue };
 
     const JobThread = struct {
         pub fn main(ctx: *Context) void {
             const tid = std.Thread.getCurrentId();
 
-            while (true)
-            {
+            while (true) {
                 const job = ctx.queue.dequeue();
                 std.debug.print("thread {} job {}\n", .{ tid, job });
 
@@ -286,7 +286,7 @@ test "MPMCQueueUnmanaged(usize) multiple consumers" {
                 std.time.sleep(10);
             }
 
-            std.debug.print("thread {} EXIT\n", .{ tid });
+            std.debug.print("thread {} EXIT\n", .{tid});
         }
     };
 
@@ -343,10 +343,9 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
         queue: *JobQueue,
 
         pub fn main(self: @This()) void {
-            std.debug.print("JobThread {} START\n", .{ self.index });
+            std.debug.print("JobThread {} START\n", .{self.index});
 
-            while (true)
-            {
+            while (true) {
                 const job = self.queue.dequeue();
                 std.debug.print("JobThread {} run job {}\n", .{ self.index, job.a[0] });
 
@@ -355,15 +354,15 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
                 std.time.sleep(1);
             }
 
-            std.debug.print("JobThread {} EXIT\n", .{ self.index });
+            std.debug.print("JobThread {} EXIT\n", .{self.index});
         }
     };
 
     const threads = [4]std.Thread{
-        try std.Thread.spawn(.{}, JobThread.main, .{ JobThread{.index = 0, .queue = &queue} }),
-        try std.Thread.spawn(.{}, JobThread.main, .{ JobThread{.index = 1, .queue = &queue} }),
-        try std.Thread.spawn(.{}, JobThread.main, .{ JobThread{.index = 2, .queue = &queue} }),
-        try std.Thread.spawn(.{}, JobThread.main, .{ JobThread{.index = 3, .queue = &queue} }),
+        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 0, .queue = &queue }}),
+        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 1, .queue = &queue }}),
+        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 2, .queue = &queue }}),
+        try std.Thread.spawn(.{}, JobThread.main, .{JobThread{ .index = 3, .queue = &queue }}),
     };
 
     queue.enqueue(Job.init(1));
