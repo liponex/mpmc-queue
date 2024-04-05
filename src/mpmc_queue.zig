@@ -1,13 +1,8 @@
 const std = @import("std");
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
 pub const cache_line_size: usize = 64;
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-/// based on https://github.com/rigtorp/MPMCQueue
-pub fn MPMCQueueUnmanaged(comptime T: type) type {
+pub fn Queue(comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -16,11 +11,11 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
             turn: usize = 0,
 
             pub fn loadTurn(slot: *const Slot) usize {
-                return @atomicLoad(usize, &slot.turn, .Acquire);
+                return @atomicLoad(usize, &slot.turn, .acquire);
             }
 
             pub fn storeTurn(slot: *Slot, value: usize) void {
-                @atomicStore(usize, &slot.turn, value, .Release);
+                @atomicStore(usize, &slot.turn, value, .release);
             }
         };
 
@@ -33,13 +28,11 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
         _slots : []Slot align(cache_line_size) = NoSlots,
         // zig fmt: on
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         pub fn init(allocator: std.mem.Allocator, _capacity: usize) !Self {
             // Allocate an extra slot to avoid false sharing on the last slot
             const slots = try allocator.alloc(Slot, _capacity + 1);
-            std.debug.assert(@ptrToInt(slots.ptr) % cache_line_size == 0);
-            std.debug.assert(@ptrToInt(slots.ptr) % @alignOf(T) == 0);
+            std.debug.assert(@intFromPtr(slots.ptr) % cache_line_size == 0);
+            std.debug.assert(@intFromPtr(slots.ptr) % @alignOf(T) == 0);
 
             for (slots) |*slot| {
                 slot.* = .{};
@@ -59,8 +52,6 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
             self.* = .{};
         }
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         pub fn capacity(self: *const Self) usize {
             return self._slots.len;
         }
@@ -70,15 +61,13 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
         }
 
         pub fn size(self: *const Self) usize {
-            const head = self.loadHead(.Monotonic);
-            const tail = self.loadTail(.Monotonic);
+            const head = self.loadHead(.monotonic);
+            const tail = self.loadTail(.monotonic);
             return if (head > tail) head - tail else 0;
         }
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         /// Enqueue `value`, blocking while queue is full.
-        pub fn enqueue(self: *Self, value: T) void {
+        pub fn push(self: *Self, value: T) void {
             const head = self.bumpHead();
             const slot = self.nthSlot(head);
             const turn = self.nthTurn(head);
@@ -91,8 +80,8 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
 
         /// Enqueue `value` if queue is not full,
         /// return `true` if enqueued, `false` otherwise.
-        pub fn enqueueIfNotFull(self: *Self, value: T) bool {
-            var head = self.loadHead(.Acquire);
+        pub fn tryPush(self: *Self, value: T) bool {
+            var head = self.loadHead(.acquire);
             while (true) {
                 const slot = self.nthSlot(head);
                 const turn = self.nthTurn(head);
@@ -104,7 +93,7 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
                     }
                 } else {
                     const prev_head = head;
-                    head = self.loadHead(.Acquire);
+                    head = self.loadHead(.acquire);
                     if (head == prev_head) {
                         return false;
                     }
@@ -112,10 +101,8 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
             }
         }
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         /// Dequeue one element, blocking while queue is empty.
-        pub fn dequeue(self: *Self) T {
+        pub fn pop(self: *Self) T {
             const tail = self.bumpTail();
             const slot = self.nthSlot(tail);
             const turn = self.nthTurn(tail) + 1;
@@ -130,8 +117,8 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
 
         /// Dequeue one element if queue is not empty,
         /// return value if dequeued, `null` otherwise.
-        pub fn dequeueIfNotEmpty(self: *Self) ?T {
-            var tail = self.loadTail(.Acquire);
+        pub fn tryPop(self: *Self) ?T {
+            var tail = self.loadTail(.acquire);
             while (true) {
                 const slot = self.nthSlot(tail);
                 const turn = self.nthTurn(tail) + 1;
@@ -144,7 +131,7 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
                     }
                 } else {
                     const prev_tail = tail;
-                    tail = self.loadTail(.Acquire);
+                    tail = self.loadTail(.acquire);
                     if (tail == prev_tail) {
                         return null;
                     }
@@ -152,37 +139,31 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
             }
         }
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         const Order = std.builtin.AtomicOrder;
 
         inline fn bumpHead(self: *Self) usize {
-            return @atomicRmw(usize, &self._head, .Add, 1, .Monotonic);
+            return @atomicRmw(usize, &self._head, .Add, 1, .monotonic);
         }
 
         inline fn bumpHeadIfEql(self: *Self, n: usize) bool {
-            return null == @cmpxchgStrong(usize, &self._head, n, n + 1, .Monotonic, .Monotonic);
+            return null == @cmpxchgStrong(usize, &self._head, n, n + 1, .monotonic, .monotonic);
         }
 
         inline fn loadHead(self: *const Self, comptime order: Order) usize {
             return @atomicLoad(usize, &self._head, order);
         }
 
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
         inline fn bumpTail(self: *Self) usize {
-            return @atomicRmw(usize, &self._tail, .Add, 1, .Monotonic);
+            return @atomicRmw(usize, &self._tail, .Add, 1, .monotonic);
         }
 
         inline fn bumpTailIfEql(self: *Self, n: usize) bool {
-            return null == @cmpxchgStrong(usize, &self._tail, n, n + 1, .Monotonic, .Monotonic);
+            return null == @cmpxchgStrong(usize, &self._tail, n, n + 1, .monotonic, .monotonic);
         }
 
         inline fn loadTail(self: *const Self, comptime order: Order) usize {
             return @atomicLoad(usize, &self._tail, order);
         }
-
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
         inline fn nthSlot(self: *Self, n: usize) *Slot {
             return &self._slots[(n % self._slots.len)];
@@ -194,77 +175,68 @@ pub fn MPMCQueueUnmanaged(comptime T: type) type {
     };
 }
 
-////////////////////////////////// T E S T S ///////////////////////////////////
-
-test "MPMCQueue basics" {
+//--------------------------------- T E S T S -------------------------------
+test "Queue basics" {
     const Data = struct {
         a: [56]u8,
     };
-    const Slot = MPMCQueueUnmanaged(Data).Slot;
+    const Slot = Queue(Data).Slot;
 
     const expectEqual = std.testing.expectEqual;
 
     try expectEqual(cache_line_size, @alignOf(Slot));
     try expectEqual(true, @sizeOf(Slot) % cache_line_size == 0);
 
-    std.debug.print("\n", .{});
-    std.debug.print("@sizeOf(Data):{}\n", .{@sizeOf(Data)});
-    std.debug.print("@sizeOf(Slot):{}\n", .{@sizeOf(Slot)});
+    const allocator = std.testing.allocator;
 
-    var allocator = std.testing.allocator;
-
-    var queue = try MPMCQueueUnmanaged(usize).init(allocator, 4);
+    var queue = try Queue(usize).init(allocator, 4);
     defer queue.deinit(allocator);
 
     try expectEqual(@as(usize, 4), queue.capacity());
     try expectEqual(@as(usize, 0), queue.size());
     try expectEqual(true, queue.empty());
 
-    queue.enqueue(@as(usize, 0));
+    queue.push(@as(usize, 0));
     try expectEqual(@as(usize, 1), queue.size());
     try expectEqual(false, queue.empty());
 
-    queue.enqueue(@as(usize, 1));
+    queue.push(@as(usize, 1));
     try expectEqual(@as(usize, 2), queue.size());
     try expectEqual(false, queue.empty());
 
-    queue.enqueue(@as(usize, 2));
+    queue.push(@as(usize, 2));
     try expectEqual(@as(usize, 3), queue.size());
     try expectEqual(false, queue.empty());
 
-    queue.enqueue(@as(usize, 3));
+    queue.push(@as(usize, 3));
     try expectEqual(@as(usize, 4), queue.size());
     try expectEqual(false, queue.empty());
 
-    try expectEqual(false, queue.enqueueIfNotFull(4));
+    try expectEqual(false, queue.tryPush(4));
     try expectEqual(@as(usize, 4), queue.size());
     try expectEqual(false, queue.empty());
 
-    try expectEqual(@as(usize, 0), queue.dequeue());
+    try expectEqual(@as(usize, 0), queue.pop());
     try expectEqual(@as(usize, 3), queue.size());
     try expectEqual(false, queue.empty());
 
-    try expectEqual(@as(usize, 1), queue.dequeue());
+    try expectEqual(@as(usize, 1), queue.pop());
     try expectEqual(@as(usize, 2), queue.size());
     try expectEqual(false, queue.empty());
 
-    try expectEqual(@as(usize, 2), queue.dequeue());
+    try expectEqual(@as(usize, 2), queue.pop());
     try expectEqual(@as(usize, 1), queue.size());
     try expectEqual(false, queue.empty());
 
-    try expectEqual(@as(usize, 3), queue.dequeue());
+    try expectEqual(@as(usize, 3), queue.pop());
     try expectEqual(@as(usize, 0), queue.size());
     try expectEqual(true, queue.empty());
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+test "Queue(usize) multiple consumers" {
+    const allocator = std.testing.allocator;
 
-test "MPMCQueueUnmanaged(usize) multiple consumers" {
-    std.debug.print("\n", .{});
-
-    var allocator = std.testing.allocator;
-
-    const JobQueue = MPMCQueueUnmanaged(usize);
+    const JobQueue = Queue(usize);
     var queue = try JobQueue.init(allocator, 4);
     defer queue.deinit(allocator);
 
@@ -275,18 +247,11 @@ test "MPMCQueueUnmanaged(usize) multiple consumers" {
 
     const JobThread = struct {
         pub fn main(ctx: *Context) void {
-            const tid = std.Thread.getCurrentId();
-
             while (true) {
-                const job = ctx.queue.dequeue();
-                std.debug.print("thread {} job {}\n", .{ tid, job });
-
+                const job = ctx.queue.pop();
                 if (job == @as(usize, 0)) break;
-
                 std.time.sleep(10);
             }
-
-            std.debug.print("thread {} EXIT\n", .{tid});
         }
     };
 
@@ -297,30 +262,24 @@ test "MPMCQueueUnmanaged(usize) multiple consumers" {
         try std.Thread.spawn(.{}, JobThread.main, .{&context}),
     };
 
-    queue.enqueue(@as(usize, 1));
-    queue.enqueue(@as(usize, 2));
-    queue.enqueue(@as(usize, 3));
-    queue.enqueue(@as(usize, 4));
+    queue.push(@as(usize, 1));
+    queue.push(@as(usize, 2));
+    queue.push(@as(usize, 3));
+    queue.push(@as(usize, 4));
 
     std.time.sleep(100);
 
-    queue.enqueue(@as(usize, 0));
-    queue.enqueue(@as(usize, 0));
-    queue.enqueue(@as(usize, 0));
-    queue.enqueue(@as(usize, 0));
+    queue.push(@as(usize, 0));
+    queue.push(@as(usize, 0));
+    queue.push(@as(usize, 0));
+    queue.push(@as(usize, 0));
 
     for (threads) |thread| {
         thread.join();
     }
-
-    std.debug.print("DONE\n", .{});
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-test "MPMCQueueUnmanaged(Job) multiple consumers" {
-    std.debug.print("\n", .{});
-
+test "Queue(Job) multiple consumers" {
     const Job = struct {
         const Self = @This();
 
@@ -333,9 +292,9 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
         }
     };
 
-    const JobQueue = MPMCQueueUnmanaged(Job);
+    const JobQueue = Queue(Job);
 
-    var allocator = std.testing.allocator;
+    const allocator = std.testing.allocator;
     var queue = try JobQueue.init(allocator, 4);
     defer queue.deinit(allocator);
 
@@ -357,18 +316,11 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
         }
 
         pub fn main(self: Self) void {
-            std.debug.print("JobThread {} START\n", .{self.index});
-
             while (true) {
-                const job = self.queue.dequeue();
-                std.debug.print("JobThread {} run job {}\n", .{ self.index, job.a[0] });
-
+                const job = self.queue.pop();
                 if (job.a[0] == @as(u8, 0)) break;
-
                 std.time.sleep(1);
             }
-
-            std.debug.print("JobThread {} EXIT\n", .{self.index});
         }
     };
 
@@ -379,23 +331,19 @@ test "MPMCQueueUnmanaged(Job) multiple consumers" {
         try JobThread.spawn(.{}, 4, &queue),
     };
 
-    queue.enqueue(Job.init(1));
-    queue.enqueue(Job.init(2));
-    queue.enqueue(Job.init(3));
-    queue.enqueue(Job.init(4));
+    queue.push(Job.init(1));
+    queue.push(Job.init(2));
+    queue.push(Job.init(3));
+    queue.push(Job.init(4));
 
     std.time.sleep(100);
 
-    queue.enqueue(Job.init(0));
-    queue.enqueue(Job.init(0));
-    queue.enqueue(Job.init(0));
-    queue.enqueue(Job.init(0));
+    queue.push(Job.init(0));
+    queue.push(Job.init(0));
+    queue.push(Job.init(0));
+    queue.push(Job.init(0));
 
     for (threads) |thread| {
         thread.join();
     }
-
-    std.debug.print("DONE\n", .{});
 }
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
